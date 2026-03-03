@@ -5,7 +5,7 @@ namespace Contab.WinForms.Forms;
 
 public sealed class SplashForm : Form
 {
-    private readonly Timer _timer;
+    private readonly System.Windows.Forms.Timer _timer;
 
     public SplashForm()
     {
@@ -38,7 +38,7 @@ public sealed class SplashForm : Form
         Controls.Add(subtitle);
         Controls.Add(title);
 
-        _timer = new Timer { Interval = 2200 };
+        _timer = new System.Windows.Forms.Timer { Interval = 2200 };
         _timer.Tick += (_, _) =>
         {
             _timer.Stop();
