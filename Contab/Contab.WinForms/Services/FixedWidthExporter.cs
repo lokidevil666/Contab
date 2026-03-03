@@ -29,8 +29,8 @@ public sealed class FixedWidthExporter
             throw new InvalidOperationException("Output structure is empty. Check contab.str.");
         }
 
-        var lines = new List<string>(rows.Count * 2);
-        foreach (var row in rows)
+        List<string> lines = new List<string>(rows.Count * 2);
+        foreach (AccountingRow row in rows)
         {
             if (structure.HeaderFields.Count > 0)
             {
@@ -40,7 +40,7 @@ public sealed class FixedWidthExporter
             lines.Add(ComposeLine(structure.OutputFields, row));
         }
 
-        var directory = Path.GetDirectoryName(outputPath);
+        string? directory = Path.GetDirectoryName(outputPath);
         if (!string.IsNullOrWhiteSpace(directory) && !Directory.Exists(directory))
         {
             Directory.CreateDirectory(directory);
@@ -52,17 +52,33 @@ public sealed class FixedWidthExporter
 
     private static string ComposeLine(IReadOnlyList<StructureField> fields, AccountingRow row)
     {
-        var lineLength = fields.Max(f => f.Start + f.Length - 1);
-        var chars = Enumerable.Repeat(' ', lineLength).ToArray();
-
-        foreach (var field in fields.OrderBy(f => f.Start))
+        int lineLength = 0;
+        foreach (StructureField field in fields)
         {
-            var value = ResolveFieldValue(field, row);
-            var fitted = Fit(value, field);
-            var start = field.Start - 1;
-            var take = Math.Min(field.Length, fitted.Length);
+            int end = field.Start + field.Length - 1;
+            if (end > lineLength)
+            {
+                lineLength = end;
+            }
+        }
 
-            for (var i = 0; i < take; i++)
+        char[] chars = new char[lineLength];
+        for (int i = 0; i < chars.Length; i++)
+        {
+            chars[i] = ' ';
+        }
+
+        List<StructureField> orderedFields = new List<StructureField>(fields);
+        orderedFields.Sort((a, b) => a.Start.CompareTo(b.Start));
+
+        foreach (StructureField field in orderedFields)
+        {
+            string value = ResolveFieldValue(field, row);
+            string fitted = Fit(value, field);
+            int start = field.Start - 1;
+            int take = Math.Min(field.Length, fitted.Length);
+
+            for (int i = 0; i < take; i++)
             {
                 chars[start + i] = fitted[i];
             }
@@ -73,51 +89,100 @@ public sealed class FixedWidthExporter
 
     private static string ResolveFieldValue(StructureField field, AccountingRow row)
     {
-        var key = LegacyStringUtils.NormalizeIdentifier(field.Name);
-        return key switch
+        string key = LegacyStringUtils.NormalizeIdentifier(field.Name);
+        string defaultValue = field.DefaultValue == "_" ? string.Empty : field.DefaultValue;
+
+        switch (key)
         {
-            "CONSTANTE" => field.DefaultValue == "_" ? string.Empty : field.DefaultValue,
-            "FILLER" => field.DefaultValue == "_" ? string.Empty : field.DefaultValue,
-            "NUMXU" or "NUMEROXU" => row.NumberXu,
-            "CHVLANC" or "CHVCONTRAPARTIDA" or "CHVINST" => row.PostingKey,
-            "CONTAGL" or "CONTAPARTIDA" or "CONTA" => row.GlAccount,
-            "MONTANTE" => FormatAmount(row.Amount, field.Length),
-            "DIVISAO" => row.Division,
-            "CPGT" or "RAZAO" => row.Cpgt,
-            "ORGV" => row.Organization,
-            "ATRIBUICAO" => row.Assignment,
-            "DESCRICAO" => row.Description,
-            "DOCREF" => row.DocumentReference,
-            "CODBANCOPOR" => row.BankCode,
-            "DATAVALOR" => row.ValueDate?.ToString("yyyyMMdd", CultureInfo.InvariantCulture) ?? string.Empty,
-            _ => field.DefaultValue == "_" ? string.Empty : field.DefaultValue
-        };
+            case "CONSTANTE":
+            case "FILLER":
+                return defaultValue;
+
+            case "NUMXU":
+            case "NUMEROXU":
+                return row.NumberXu;
+
+            case "CHVLANC":
+            case "CHVCONTRAPARTIDA":
+            case "CHVINST":
+                return row.PostingKey;
+
+            case "CONTAGL":
+            case "CONTAPARTIDA":
+            case "CONTA":
+                return row.GlAccount;
+
+            case "MONTANTE":
+                return FormatAmount(row.Amount, field.Length);
+
+            case "DIVISAO":
+                return row.Division;
+
+            case "CPGT":
+            case "RAZAO":
+                return row.Cpgt;
+
+            case "ORGV":
+                return row.Organization;
+
+            case "ATRIBUICAO":
+                return row.Assignment;
+
+            case "DESCRICAO":
+                return row.Description;
+
+            case "DOCREF":
+                return row.DocumentReference;
+
+            case "CODBANCOPOR":
+                return row.BankCode;
+
+            case "DATAVALOR":
+                if (row.ValueDate.HasValue)
+                {
+                    return row.ValueDate.Value.ToString("yyyyMMdd", CultureInfo.InvariantCulture);
+                }
+
+                return string.Empty;
+
+            default:
+                return defaultValue;
+        }
     }
 
     private static string Fit(string value, StructureField field)
     {
-        value ??= string.Empty;
+        if (value == null)
+        {
+            value = string.Empty;
+        }
 
         if (value.Length > field.Length)
         {
-            value = value[..field.Length];
+            value = value.Substring(0, field.Length);
         }
 
-        var key = LegacyStringUtils.NormalizeIdentifier(field.Name);
-        var leftPad = key is "MONTANTE" or "CHVLANC" or "CHVCONTRAPARTIDA";
-        var padChar = leftPad ? '0' : ' ';
-        return leftPad ? value.PadLeft(field.Length, padChar) : value.PadRight(field.Length, padChar);
+        string key = LegacyStringUtils.NormalizeIdentifier(field.Name);
+        bool leftPad = key == "MONTANTE" || key == "CHVLANC" || key == "CHVCONTRAPARTIDA";
+        char padChar = leftPad ? '0' : ' ';
+
+        if (leftPad)
+        {
+            return value.PadLeft(field.Length, padChar);
+        }
+
+        return value.PadRight(field.Length, padChar);
     }
 
     private static string FormatAmount(decimal amount, int fieldLength)
     {
-        var sign = amount < 0 ? "-" : "+";
-        var cents = decimal.Truncate(Math.Abs(amount) * 100m).ToString(CultureInfo.InvariantCulture);
-        var payloadLength = Math.Max(1, fieldLength - 1);
+        string sign = amount < 0m ? "-" : "+";
+        string cents = decimal.Truncate(Math.Abs(amount) * 100m).ToString(CultureInfo.InvariantCulture);
+        int payloadLength = Math.Max(1, fieldLength - 1);
 
         if (cents.Length > payloadLength)
         {
-            cents = cents[^payloadLength..];
+            cents = cents.Substring(cents.Length - payloadLength, payloadLength);
         }
 
         return sign + cents.PadLeft(payloadLength, '0');

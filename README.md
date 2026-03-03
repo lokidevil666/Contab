@@ -10,3 +10,7 @@ Legacy VB6 accounting project plus a C# WinForms migration baseline.
 ## Migration notes
 
 See: `Contab/MIGRATION_NOTES.md`
+
+## Beginner-friendly guide
+
+See: `Contab/Contab.WinForms/SIMPLE_GUIDE.md`

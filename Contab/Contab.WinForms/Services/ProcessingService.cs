@@ -9,32 +9,49 @@ public sealed class ProcessingService
     {
         if (transactions.Count == 0)
         {
-            return Array.Empty<AccountingRow>();
+            return new List<AccountingRow>();
         }
 
-        var source = ShouldAggregate(config)
-            ? Aggregate(transactions)
-            : transactions;
-
-        var rows = new List<AccountingRow>(source.Count);
-        var sequence = 1;
-
-        foreach (var tx in source)
+        List<LegacyTransaction> source;
+        if (ShouldAggregate(config))
         {
-            var bankCode = LegacyStringUtils.GetBankCode(tx.AccountNib);
-            var company = tx.Company;
+            source = AggregateTransactions(transactions);
+        }
+        else
+        {
+            source = new List<LegacyTransaction>(transactions);
+        }
 
-            rows.Add(new AccountingRow
+        List<AccountingRow> rows = new List<AccountingRow>(source.Count);
+        int sequence = 1;
+
+        foreach (LegacyTransaction tx in source)
+        {
+            string bankCode = LegacyStringUtils.GetBankCode(tx.AccountNib);
+            string company = tx.Company;
+            string division = company.Length >= 2 ? company.Substring(0, 2) : company;
+            string numberXu;
+
+            if (string.IsNullOrWhiteSpace(tx.NumberXu))
+            {
+                numberXu = "X" + sequence.ToString().PadLeft(11, '0');
+            }
+            else
+            {
+                numberXu = tx.NumberXu;
+            }
+
+            string postingKey = tx.Amount < 0m ? "50" : "40";
+
+            AccountingRow row = new AccountingRow
             {
                 Company = company,
-                NumberXu = string.IsNullOrWhiteSpace(tx.NumberXu)
-                    ? $"X{sequence.ToString().PadLeft(11, '0')}"
-                    : tx.NumberXu,
-                PostingKey = tx.Amount < 0m ? "50" : "40",
+                NumberXu = numberXu,
+                PostingKey = postingKey,
                 GlAccount = tx.AccountCode,
                 Amount = tx.Amount,
                 Currency = tx.Currency,
-                Division = company.Length >= 2 ? company[..2] : company,
+                Division = division,
                 Cpgt = bankCode,
                 Organization = company,
                 Assignment = tx.FlowCode,
@@ -42,7 +59,9 @@ public sealed class ProcessingService
                 DocumentReference = tx.ChequeNumber,
                 BankCode = bankCode,
                 ValueDate = tx.ValueDate
-            });
+            };
+
+            rows.Add(row);
 
             sequence++;
         }
@@ -61,38 +80,77 @@ public sealed class ProcessingService
                !config.Aggregator.Equals("Sem Agregacao", StringComparison.OrdinalIgnoreCase);
     }
 
-    private static IReadOnlyList<LegacyTransaction> Aggregate(IReadOnlyList<LegacyTransaction> transactions)
+    private static List<LegacyTransaction> AggregateTransactions(IReadOnlyList<LegacyTransaction> transactions)
     {
-        return transactions
-            .GroupBy(t => new { t.AccountCode, t.FlowCode, t.Company, t.Currency, t.AccountNib })
-            .Select(g =>
+        Dictionary<string, LegacyTransaction> aggregated = new Dictionary<string, LegacyTransaction>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (LegacyTransaction tx in transactions)
+        {
+            string key = string.Join("|",
+                tx.AccountCode ?? string.Empty,
+                tx.FlowCode ?? string.Empty,
+                tx.Company ?? string.Empty,
+                tx.Currency ?? string.Empty,
+                tx.AccountNib ?? string.Empty);
+
+            if (!aggregated.ContainsKey(key))
             {
-                var first = g.First();
-                return new LegacyTransaction
+                LegacyTransaction first = new LegacyTransaction
                 {
-                    RecordId = first.RecordId,
-                    ImportDate = first.ImportDate,
-                    FlowCode = first.FlowCode,
-                    BookDate = first.BookDate,
-                    Description = first.Description,
-                    ChequeNumber = first.ChequeNumber,
-                    ValueDate = first.ValueDate,
-                    AccountCode = first.AccountCode,
-                    AccountNib = first.AccountNib,
-                    Amount = g.Sum(x => x.Amount),
-                    Currency = first.Currency,
-                    Company = first.Company
+                    RecordId = tx.RecordId,
+                    ImportDate = tx.ImportDate,
+                    FlowCode = tx.FlowCode,
+                    BookDate = tx.BookDate,
+                    Description = tx.Description,
+                    ChequeNumber = tx.ChequeNumber,
+                    ValueDate = tx.ValueDate,
+                    AccountCode = tx.AccountCode,
+                    AccountNib = tx.AccountNib,
+                    Amount = tx.Amount,
+                    Currency = tx.Currency,
+                    Company = tx.Company
                 };
-            })
-            .ToList();
+
+                aggregated[key] = first;
+            }
+            else
+            {
+                LegacyTransaction old = aggregated[key];
+                LegacyTransaction updated = new LegacyTransaction
+                {
+                    RecordId = old.RecordId,
+                    ImportDate = old.ImportDate,
+                    FlowCode = old.FlowCode,
+                    BookDate = old.BookDate,
+                    Description = old.Description,
+                    ChequeNumber = old.ChequeNumber,
+                    ValueDate = old.ValueDate,
+                    AccountCode = old.AccountCode,
+                    AccountNib = old.AccountNib,
+                    Amount = old.Amount + tx.Amount,
+                    Currency = old.Currency,
+                    Company = old.Company
+                };
+
+                aggregated[key] = updated;
+            }
+        }
+
+        List<LegacyTransaction> list = new List<LegacyTransaction>(aggregated.Count);
+        foreach (KeyValuePair<string, LegacyTransaction> pair in aggregated)
+        {
+            list.Add(pair.Value);
+        }
+
+        return list;
     }
 
     private static string BuildDescription(LegacyTransaction tx, AppConfig? config)
     {
-        var description = tx.Description ?? string.Empty;
+        string description = tx.Description ?? string.Empty;
         if (description.Length > 42)
         {
-            description = description[..42];
+            description = description.Substring(0, 42);
         }
 
         if (config is null)
@@ -100,14 +158,23 @@ public sealed class ProcessingService
             return description;
         }
 
-        var mode = (config.ErpDescriptionMode ?? "GERAL").Trim().ToUpperInvariant();
-        return mode switch
+        string mode = (config.ErpDescriptionMode ?? "GERAL").Trim().ToUpperInvariant();
+        if (mode == "DESC")
         {
-            "DESC" => description,
-            "DESC2" => $"{tx.FlowCode} {description}".Trim().Length > 42
-                ? $"{tx.FlowCode} {description}".Trim()[..42]
-                : $"{tx.FlowCode} {description}".Trim(),
-            _ => description
-        };
+            return description;
+        }
+
+        if (mode == "DESC2")
+        {
+            string combined = ((tx.FlowCode ?? string.Empty) + " " + description).Trim();
+            if (combined.Length > 42)
+            {
+                return combined.Substring(0, 42);
+            }
+
+            return combined;
+        }
+
+        return description;
     }
 }

@@ -38,6 +38,7 @@ A new C# Windows application was added without deleting or changing the original
 - Async database I/O (`async/await`) to keep UI responsive.
 - Parameterized SQL commands (safer than string concatenation).
 - Clear model-based pipeline (`Config -> Structure -> Transactions -> AccountingRows -> Export`).
+- Added a beginner-friendly readability pass (simpler UI code and explicit step-by-step logic).
 
 ## Out-of-scope or specialized legacy behavior
 
